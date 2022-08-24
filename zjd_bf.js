@@ -1,6 +1,7 @@
 /*
 赚京豆
 @Leaf
+0 0 * * * * zjd_bf.js
 */
 const $ = new Env("赚京豆");
 
