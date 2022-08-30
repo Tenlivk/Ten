@@ -1,10 +1,6 @@
-/**
- * const $ = new Env('京东新品-集魔方兑换-本地log版');
- * cron: 10 8 * * *
- * Fix by HarbourJ
- * TG: https://t.me/HarbourToulu
- * 默认魔方满3/6自动兑换
- * 已内置log，不定时更新，若火爆请在HarbourTouluChat反馈以便及时更新log。
+/*
+京东新品-集魔方兑换
+10 8 * * * jd_xmf.js
  */
 
 import {requireConfig, wait, post, get} from './TS_USER_AGENTS'
