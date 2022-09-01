@@ -1,36 +1,63 @@
 /*
-赚京豆-并发
+邀请赢大礼
 @Leaf
-0 0 * * * zjd_bf.js
-*/
-const $ = new Env("赚京豆");
+cron: 1 1 1 1 1
+监控变量：
+jd_invite_activity_url -- 监控变量，活动地址
+jd_helpPin_invite -- 变量，车头pin，多车头用逗号隔开
 
-let NUM_MAX_RETRY = 2 //开团火爆重试次数，调成0也可以
-let NUM_CONCURRENCY = 10 //并发数
+NUM_MAX_CONCURRENCY：并发助力数，默认最大并发20，动态计算需要并发的数量(不大于剩余需邀请人数)
+mode：0-所有奖品都冲，1-只冲京豆E卡，也可以自定义白名单，2-冲榜首，全部助力第一个车头
+
+account_info: 要跑的pin放进去key里面
+account_info.addr: 你的收货地址，对应pin
+*/
+const $ = new Env("邀请赢大礼");
 
 let envSplitor = ['&','\n']
 let httpResult, httpReq, httpResp
 
-const jsdom = require('jsdom');
-const datefns = require('date-fns');
-const CryptoJS = require('crypto-js')
+let mode = 0 //0-所有奖品都冲，1-只冲京豆E卡，也可以自定义白名单，2-冲榜首，全部助力第一个车头
+let prizePattern = ['京豆','E卡']
 
-let userCookie = ($.isNode() ? process.env.JD_COOKIE : $.getdata('JD_COOKIE')) || '';
+let printInfo = true
+let account_info = {
+    'pin': {
+        drawBean: true,
+        addr: {"countyName":"区","telPhone":"1234567890123","cityName":"市","detailInfo":"地址","userName":"先生","provinceName":"省"},
+    },
+}
+
+let NUM_MAX_RETRY = 3 //出错重试次数
+let NUM_MAX_CONCURRENCY = 20 //最大并发数
+
+let activityUrl =  process.env.jd_invite_activity_url || 'https://pro.m.jd.com/mall/active/dVF7gQUVKyUcuSsVhuya5d2XD4F/index.html?code=d8e966f5199b4450baad1cc532a6af55'
+
+if(!activityUrl.includes('code=')) {
+    activityUrl = `https://pro.m.jd.com/mall/active/dVF7gQUVKyUcuSsVhuya5d2XD4F/index.html?code=${activityUrl}`
+}
+let activityId = activityUrl.match(/mall\/active\/(\w+)/)[1]
+let activityCode = activityUrl.match(/code=(\w+)/)[1]
+
+let userCookie = process.env.JD_COOKIE || '';
+
+//额外CK文件，有的话打开，没有的话就别动
+//let ck_file = "fugui_ck.txt"
+//const fs = require('fs')
+//userCookie += '&'+fs.readFileSync(ck_file,"utf8").replace(/\n/g,'&')
 
 let userList = []
 let validJdList = []
+let inviterList = []
 let userIdx = 0
 let userCount = 0
 
-let h5stMode = 1
-let signWaap = null
-let fingerprint, enCryptMethodJD, h5stToken
+let shopId, venderId, shopName
+let globalExitFlag = false
 
-let zjdAppid = "b342e"
-let h5stAppid = "swat_miniprogram"
-let h5stVersion = '3.0'
 let defaultUA = 'Mozilla/5.0 (Linux; Android 9; Note9 Build/PKQ1.181203.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/86.0.4240.99 XWEB/3211 MMWEBSDK/20220303 Mobile Safari/537.36 MMWEBID/8813 MicroMessenger/8.0.21.2120(0x2800153B) Process/appbrand1 WeChat/arm64 Weixin NetType/4G Language/zh_CN ABI/arm64 MiniProgramEnv/android'
-let Referer = 'https://servicewechat.com/wxa5bf5ee667d91626/190/page-frame.html'
+let Referer = 'https://prodev.m.jd.com/'
+let Origin = 'https://prodev.m.jd.com'
 
 let iosVerList = ["15.1.1", "14.5.1", "14.4", "14.3", "14.2", "14.1", "14.0.1"]
 let clientVerList = ["10.3.0", "10.2.7", "10.2.4"]
@@ -46,7 +73,8 @@ class UserInfo {
         try {
             this.cookie = str
             this.pt_key = str.match(/pt_key=([\w\-]+)/)[1]
-            this.pt_pin = decodeURIComponent(str.match(/pt_pin=([\w\-\%]+)/)[1])
+            this.pt_pin = str.match(/pt_pin=([\w\-\%]+)/)[1]
+            this.name = decodeURIComponent(this.pt_pin)
             this.isJdCK = true
             this.uuid = $.randomString(40)
             this.addressid = $.randomString(10,'123456789')
@@ -57,184 +85,400 @@ class UserInfo {
             this.un_area = $.randomString(2,'1234567890') + '-' + $.randomString(4,'1234567890') + '-' + $.randomString(4,'1234567890') + '-' + $.randomString(5,'1234567890')
             this.UA = `jdapp;iPhone;10.1.4;${this.iosVer};${this.uuid};network/wifi;model/iPhone${this.iphone},1;addressid/${this.addressid};appBuild/167707;jdSupportDarkMode/0;Mozilla/5.0 (iPhone; CPU iPhone OS ${this.iosVer_} like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/null;supportJDSHWK/1`
             
-            this.result = ''
-            this.needHelp = false
-            this.maxHelp = false
+            this.needInviteNum = 0
+            this.successCount = 0
             this.canHelp = true
+            this.stageReward = []
         } catch (e) {
             console.log(`账号[${this.index}]CK无效，可能不是京东CK`)
         }
     }
     
-    async jdApi(functionID,bodyInfo,appId) {
-        this.result = ''
+    async plogin() {
         try {
-            let url = `https://api.m.jd.com/api?functionId=${functionID}&fromType=wxapp&timestamp=${Date.now()}`
-            let param = {
-                "appid": h5stAppid,
-                "body": CryptoJS.SHA256(JSON.stringify(bodyInfo)).toString(CryptoJS.enc.Hex),
-                "functionId": functionID,
-            }
+            let nowtime = Date.now()
+            let url = `https://plogin.m.jd.com/cgi-bin/ml/islogin?time=${nowtime}&callback=__jsonp${nowtime-2}&_=${nowtime+2}`
             let body = ''
-            if(h5stMode == 0) {
-                let h5st = get_h5st(param);
-                body = `functionId=distributeBeanActivityInfo&body=${encodeURIComponent(JSON.stringify(bodyInfo))}&appid=swat_miniprogram&h5st=${encodeURIComponent(h5st)}`
-            } else if(h5stMode == 1) {
-                let h5st = await signWaap(appId, { appid: "swat_miniprogram", body: bodyInfo, clientVersion: "3.1.3", client: "tjj_m", functionId: functionID });
-                body = `body=${encodeURIComponent(JSON.stringify(bodyInfo))}&appid=swat_miniprogram&h5st=${encodeURIComponent(h5st)}&uuid=${this.uuid}&client=tjj_m&screen=1920*1080&osVersion=5.0.0&networkType=wifi&sdkName=orderDetail&sdkVersion=1.0.0&clientVersion=3.1.3&area=11`
+            let urlObject = populateUrlObject(url,this.cookie,this.UA,body)
+            await httpRequest('get',urlObject)
+            let result = httpResult;
+            if(!result) return Promise.resolve(0);
+            //console.log(result)
+            if(result.indexOf('"islogin":"1"') > -1) {
+                console.log(`账号${this.index}[${this.name}]登录成功`)
             } else {
-                console.log(`不支持的h5stMode: ${h5stMode}`)
+                console.log(`账号${this.index}[${this.name}]登录失败`)
             }
-            let cookie = `${this.cookie}appid=wxa5bf5ee667d91626;wxclient=gxhwx;ie_ai=1;appkey=797c7d5f8f0f499b936aad5edcffa08c`
-            let urlObject = populateUrlObject(url,cookie,defaultUA,body)
-            await httpRequest('post',urlObject)
-            this.result = httpResult;
         } catch(e) {
             console.log(e)
         } finally {
-            return new Promise((resolve) => {resolve(1)});
+            return Promise.resolve(1);
         }
     }
     
-    async getUserTuanInfo(retry=0) {
+    async getActivityPage(helpee,isMain=false) {
         try {
-            await this.jdApi('distributeBeanActivityInfo', { "paramData": { "channel": "FISSION_BEAN" }}, 'd8ac0');
-            //console.log(JSON.stringify(this.result))
-            if(this.result?.success == true && this.result?.data) {
-                let data = this.result.data
-                if(data.canStartNewAssist) {
-                    console.log(`账号${this.index}[${this.pt_pin}]可以开团`)
-                    await this.startNewAssist(data.id)
-                } else {
-                    if(data.assistStatus == 1) {
-                        this.needHelp = true
-                        this.assistParam = {
-                            "activityIdEncrypted": data.id,
-                            "assistStartRecordId": data.assistStartRecordId,
-                            "assistedPinEncrypted": data.encPin,
-                            "channel": "FISSION_BEAN",
-                            "launchChannel": "undefined"
+            let nowtime = Date.now()
+            let url = `https://jdjoy.jd.com/member/bring/getActivityPage?code=${activityCode}&invitePin=${helpee.pt_pin}&_t=${nowtime}`
+            let body = ''
+            let urlObject = populateUrlObject(url,this.cookie,this.UA,body)
+            await httpRequest('get',urlObject)
+            let result = httpResult;
+            if(!result) return Promise.resolve(0);
+            //console.log(JSON.stringify(result))
+            if(result.success == true) {
+                if(isMain) {
+                    shopId = result.data.shopId.toString()
+                    venderId = result.data.venderId.toString()
+                    shopName = result.data.shopName
+                    nowtime = Date.now()
+                    this.successCount = result.data.successCount
+                    if(printInfo) {
+                        $.logAndNotify(`------------------------------------------`)
+                        $.logAndNotify(`活动：${result.data.inviteFloor}`)
+                        $.logAndNotify(`开始时间：${$.time('yyyy-MM-dd hh:mm:ss',result.data.beginTime)}`)
+                        $.logAndNotify(`结束时间：${$.time('yyyy-MM-dd hh:mm:ss',result.data.endTime)}`)
+                        $.logAndNotify(`店铺：${shopName}`)
+                        $.logAndNotify(`shopId：${shopId}`)
+                        $.logAndNotify(`venderId：${venderId}`)
+                        if(result.data.rankFloor && result.data?.rankInfo?.rewardList && result.data.rankInfo.rewardList.length > 0) {
+                            $.logAndNotify(`${result.data.rankFloor}：`)
+                            for(let item of result.data.rankInfo.rewardList) {
+                                $.logAndNotify(`-- ${item.introduction}`)
+                            }
                         }
-                        console.log(`账号${this.index}[${this.pt_pin}]已开团，获取到助力参数`)
-                    } else if(data.assistStatus == 2) {
-                        console.log(`账号${this.index}[${this.pt_pin}]开团已过期，助力未满`)
-                        this.needHelp = false
-                        this.maxHelp = true
-                    } else if(data.assistStatus == 3) {
-                        console.log(`账号${this.index}[${this.pt_pin}]开团上限且助力已满`)
-                        this.needHelp = false
-                        this.maxHelp = true
+                        $.logAndNotify(`------------------------------------------`)
+                        printInfo = false
+                    }
+                    $.logAndNotify(`账号${this.index}[${this.name}]奖品：`)
+                    let remainCount = 0;
+                    for(let item of result.data.rewards) {
+                        this.stageReward.push({
+                            stage: item.stage,
+                            inviteNum: item.inviteNum, 
+                            rewardName: item.rewardName,
+                            rewardStock: item.rewardStock,
+                            rewardStatus: item.rewardStatus,
+                        })
+                        if(item.rewardType == 1 || item.rewardType == 3) {
+                            if(item.rewardStock > 0) {
+                                remainCount = $.getMax(remainCount,item.rewardStock)
+                            }
+                        }
+                        if(item.rewardStock > 0 && item.rewardStatus <= 1) {
+                            switch(item.rewardType) {
+                                case 1: //京豆
+                                    if(!account_info[this.pt_pin].drawBean) {
+                                        console.log(`账号${this.index}[${this.name}]设置为不拿京豆`)
+                                        break;
+                                    }
+                                case 3: //实物
+                                    this.needHelp = true
+                                    if(mode == 0) {
+                                        this.needInviteNum = $.getMax(item.inviteNum,this.needInviteNum)
+                                    } else if(mode == 1) {
+                                        for(let pattern of prizePattern) {
+                                            if(item.rewardName.indexOf(pattern) > -1) {
+                                                this.needInviteNum = $.getMax(item.inviteNum,this.needInviteNum)
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    break;
+                                case 2: //优惠券
+                                default:
+                                    break;
+                            }
+                        }
+                        if(mode == 2) {
+                            this.needHelp = true
+                            this.needInviteNum = 99999999
+                        }
+                        let rstr = '未达标'
+                        if(item.rewardStatus == 1) {
+                            rstr = '未达标'
+                        } else if(item.rewardStatus == 2) {
+                            rstr = '待领取'
+                        } else if(item.rewardStatus == 3) {
+                            rstr = '已领取'
+                        } else if(item.rewardStatus == 4) {
+                            rstr = '已发完'
+                        }
+                        $.logAndNotify(`-- [${item.stage}] ${item.inviteNum}人：${item.rewardName}，剩余${item.rewardStock}份，${rstr}`)
+                    }
+                    if(remainCount == 0) {
+                        $.logAndNotify(`所有京豆和实物奖品已发完，退出`)
+                        await $.showmsg();
+                        process.exit(0);
+                    }
+                    $.logAndNotify(`已邀请：${this.successCount}人`)
+                    if(this.needHelp) {
+                        console.log(`账号${this.index}[${this.name}]需要邀请${this.needInviteNum}人`)
                     } else {
-                        console.log(`账号${this.index}[${this.pt_pin}]: canStartNewAssist=${data.canStartNewAssist}, assistStatus=${data.assistStatus}`)
+                        console.log(`账号${this.index}[${this.name}]不需要邀请`)
+                    }
+                    if(nowtime < result.data.beginTime) {
+                        $.logAndNotify('活动未开始，退出')
+                        globalExitFlag = true
+                    }
+                    if(nowtime > result.data.endTime) {
+                        $.logAndNotify('活动已过期，退出')
+                        globalExitFlag = true
                     }
                 }
             } else {
-                console.log(`账号${this.index}[${this.pt_pin}]获取开团信息失败: ${this.result?.message}`)
-                if(this.result?.message && this.result.message.indexOf('火爆') > -1) {
-                    if(retry < NUM_MAX_RETRY) {
-                        retry++
-                        console.log(`账号${this.index}[${this.pt_pin}]获取开团信息重试第${retry}次`)
-                        await this.getUserTuanInfo(retry)
-                    } else {
-                        this.maxHelp = true
-                    }
+                console.log(`账号${this.index}[${this.name}]进入活动页面失败：${result.errorMessage}`)
+                this.canHelp = false
+            }
+        } catch(e) {
+            console.log(e)
+            console.log(result)
+            console.log('----------------')
+        } finally {
+            return Promise.resolve(1);
+        }
+    }
+    
+    async firstInvite(retry=false) {
+        try {
+            let url = `https://jdjoy.jd.com/member/bring/firstInvite?code=${activityCode}`
+            let body = ''
+            let urlObject = populateUrlObject(url,this.cookie,this.UA,body)
+            await httpRequest('get',urlObject)
+            let result = httpResult;
+            if(!result) return Promise.resolve(0);
+            //console.log(JSON.stringify(result))
+            if(result.success == true) {
+                console.log(`账号${this.index}[${this.name}]开启邀请成功`)
+            } else {
+                console.log(`账号${this.index}[${this.name}]开启邀请失败：${result.errorMessage}`)
+                if(result?.errorMessage?.includes('没有访问权限') && !retry) {
+                    await this.joinMember()
+                    await $.wait(3000)
+                    await this.firstInvite(true)
+                } else {
+                    this.isBlack = true
                 }
             }
         } catch(e) {
             console.log(e)
         } finally {
-            return new Promise((resolve) => {resolve(1)});
+            return Promise.resolve(1);
         }
     }
     
-    async startNewAssist(id) {
+    async getInviteReward(rewards,retry=0) {
         try {
-            await this.jdApi('vvipclub_distributeBean_startAssist', { "activityIdEncrypted": id, "channel": "FISSION_BEAN", "launchChannel": "undefined" }, 'dde2b');
-            //console.log(JSON.stringify(this.result))
-            if(this.result?.success == true) {
-                console.log(`账号${this.index}[${this.pt_pin}]开团成功`)
-                await this.getUserTuanInfo();
+            let url = `https://jdjoy.jd.com/member/bring/getInviteReward?code=${activityCode}&stage=${rewards.stage}`
+            let body = ''
+            let urlObject = populateUrlObject(url,this.cookie,this.UA,body)
+            await httpRequest('get',urlObject)
+            let result = httpResult;
+            if(!result) return Promise.resolve(0);
+            //console.log(JSON.stringify(result))
+            if(result.success == true) {
+                rewards.rewardStatus = 3
+                $.logAndNotify(`账号${this.index}[${this.name}]领取阶段[${rewards.stage}]奖励[${rewards.rewardName}]成功`)
             } else {
-                console.log(`账号${this.index}[${this.pt_pin}]开团失败: ${this.result?.message}`)
-            }
-        } catch(e) {
-            console.log(e)
-        } finally {
-            return new Promise((resolve) => {resolve(1)});
-        }
-    }
-    
-    async help(helpee) {
-        try {
-            await this.jdApi('vvipclub_distributeBean_assist', helpee.assistParam, 'b9790');
-            //console.log(JSON.stringify(this.result))
-            if(this.result?.success == true) {
-                console.log(`助力账号${helpee.index}[${helpee.pt_pin}]成功`)
-            } else {
-                if(this.result) {
-                    let data = this.result
-                    if (data.resultCode === '9200008') {
-                        console.log(`助力 账号${helpee.index}[${helpee.pt_pin}]失败：不能助力自己`)
-                    } else if (data.resultCode === '9200011') {
-                        console.log(`助力 账号${helpee.index}[${helpee.pt_pin}]失败：已经助力过`)
-                    } else if (data.resultCode === '2400205') {
-                        console.log(`助力账号${helpee.index}[${helpee.pt_pin}]失败：对方团已满`)
-                        helpee.needHelp = false
-                        await helpee.getUserTuanInfo();
-                        if(helpee.needHelp) await this.help(helpee)
-                    } else if (data.resultCode === '2400203' || data.resultCode === '90000014' ) {
-                        console.log(`助力账号${helpee.index}[${helpee.pt_pin}]失败：助力次数已耗尽`);
-                        this.canHelp = false
-                    } else if (data.resultCode === '9000000' || data.resultCode === '9000013'|| data.resultCode === '101' || data.resultCode === '1000022') {
-                        console.log(`助力账号${helpee.index}[${helpee.pt_pin}]失败：[${data.resultCode}]活动火爆`);
-                        this.canHelp = false
+                if(result.errorMessage.indexOf('交易失败') > -1) {
+                    $.logAndNotify(`账号${this.index}[${this.name}]领取阶段[${rewards.stage}]奖励[${rewards.rewardName}]失败`)
+                    if(account_info[this.pt_pin] && retry == 0) {
+                        await this.saveAddress(account_info[this.pt_pin].addr,rewards)
                     } else {
-                        console.log(`助力账号${helpee.index}[${helpee.pt_pin}]失败: [${data?.resultCode}]${data?.message}`)
-                        this.canHelp = false
+                        rewards.rewardStatus = 3
                     }
                 } else {
-                    console.log(httpResp)
+                    $.logAndNotify(`账号${this.index}[${this.name}]领取阶段[${rewards.stage}]奖励[${rewards.rewardName}]失败：${result.errorMessage}`)
+                    if(result.errorMessage && result.errorMessage.includes('参加过')) {
+                        rewards.rewardStatus = 3
+                    }
                 }
             }
         } catch(e) {
             console.log(e)
         } finally {
-            return new Promise((resolve) => {resolve(1)});
+            return Promise.resolve(1);
+        }
+    }
+    
+    async saveAddress(addr,rewards) {
+        try {
+            let url = `https://jdjoy.jd.com/member/bring/saveAddress?code=${activityCode}`
+            let urlObject = populateUrlObject(url,this.cookie,this.UA,JSON.stringify(addr))
+            await httpRequest('post',urlObject)
+            let result = httpResult;
+            if(!result) return Promise.resolve(0);
+            //console.log(JSON.stringify(result))
+            if(result.success == true) {
+                $.logAndNotify(`账号${this.index}[${this.name}]保存地址成功:`)
+                $.logAndNotify(JSON.stringify(addr))
+                await $.wait(5000)
+                await this.getInviteReward(rewards,1)
+            } else {
+                $.logAndNotify(`账号${this.index}[${this.name}]保存地址失败：${result.errorMessage}`)
+            }
+        } catch(e) {
+            console.log(e)
+        } finally {
+            return Promise.resolve(1);
+        }
+    }
+    
+    async getShopOpenCardInfo(retry=0) {
+        try {
+            let bodyParam = {"venderId":venderId, "channel":"401"}
+            let url = `https://api.m.jd.com/client.action?appid=jd_shop_member&functionId=getShopOpenCardInfo&body=${encodeURIComponent(JSON.stringify(bodyParam))}&client=H5&clientVersion=9.2.0&uuid=88888`
+            let body = ''
+            let urlObject = populateUrlObject(url,this.cookie,this.UA,body)
+            delete urlObject.headers.Origin
+            this.referUrl = `https://prodev.m.jd.com/mall/active/${activityId}/index.html?code=${activityCode}`
+            urlObject.headers.Referer = `https://shopmember.m.jd.com/shopcard/?venderId=${venderId}&channel=801&returnUrl=${encodeURIComponent(this.referUrl)}`
+            await httpRequest('get',urlObject)
+            let result = httpResult;
+            if(!result) return Promise.resolve(0);
+            //console.log(JSON.stringify(result))
+            if(result.success == true) {
+                if(result.result.userInfo.openCardStatus==0) {
+                    this.canHelp = true
+                    console.log(`账号${this.index}[${this.name}]未入会，可以助力`)
+                } else {
+                    this.canHelp = false
+                    console.log(`账号${this.index}[${this.name}]已入会`)
+                }
+            } else {
+                if(result.message.indexOf('火爆') > -1) {
+                    this.canHelp = false
+                    console.log(`账号${this.index}[${this.name}]获取入会状态火爆，黑号`)
+                } else if(retry < NUM_MAX_RETRY) {
+                    console.log(`账号${this.index}[${this.name}]获取入会状态失败[${result.busiCode}]，重试第${++retry}次：${result.message}`)
+                    await $.wait(200)
+                    await this.getShopOpenCardInfo(retry)
+                } else {
+                    this.canHelp = false
+                    console.log(`账号${this.index}[${this.name}]获取入会状态失败[${result.busiCode}]：${result.message}`)
+                }
+            }
+        } catch(e) {
+            console.log(e)
+        } finally {
+            return Promise.resolve(1);
+        }
+    }
+    
+    async joinMember(helpee,retry=0) {
+        try {
+            let url = `https://jdjoy.jd.com/member/bring/joinMember?code=${activityCode}&invitePin=${helpee?.pt_pin||''}`
+            let body = ''
+            let urlObject = populateUrlObject(url,this.cookie,this.UA,body)
+            urlObject.headers.Referer = this.referUrl
+            await httpRequest('get',urlObject)
+            let result = httpResult;
+            if(!result) return Promise.resolve(0);
+            //console.log(JSON.stringify(result))
+            if(result.success == true) {
+                this.canHelp = false
+                if(helpee) {
+                    if(helpee.pt_pin != this.pt_pin) helpee.successCount += 1
+                    console.log(`账号${this.index}[${this.name}]入会成功，已助力[${helpee.name}]`)
+                } else {
+                    console.log(`账号${this.index}[${this.name}]入会成功`)
+                }
+            } else {
+                if(result.errorMessage.indexOf('交易失败') > -1) {
+                    if(helpee.pt_pin != this.pt_pin) helpee.successCount += 1
+                    this.canHelp = false
+                    console.log(`账号${this.index}[${this.name}]入会成功，已助力[${helpee.name}]`)
+                } else if(result.errorMessage.indexOf('data already exist') > -1) {
+                    console.log(`账号${this.index}[${this.name}]已入过会`)
+                    this.canHelp = false
+                } else if(result.errorMessage.indexOf('火爆') > -1) {
+                    console.log(`账号${this.index}[${this.name}]入会火爆`)
+                    this.canHelp = false
+                } else if(retry < NUM_MAX_RETRY) {
+                    console.log(`账号${this.index}[${this.name}]入会失败，重试第${++retry}次：${result.errorMessage}`)
+                    await $.wait(200)
+                    await this.joinMember(helpee,retry)
+                } else {
+                    this.canHelp = false
+                    console.log(`账号${this.index}[${this.name}]入会失败：${result.errorMessage}`)
+                }
+            }
+        } catch(e) {
+            console.log(e)
+        } finally {
+            return Promise.resolve(1);
         }
     }
     
     async userHelpTask(helpee) {
         try {
-            if(!helpee.needHelp && !helpee.maxHelp) {
-                await helpee.getUserTuanInfo()
-            }
-            if(helpee.needHelp) {
-                await this.help(helpee)
-            }
+            await this.getShopOpenCardInfo();
+            if(!this.canHelp) return Promise.resolve(1);
+            await this.getActivityPage(helpee);
+            await this.joinMember(helpee)
         } catch(e) {
             console.log(e)
         } finally {
-            return new Promise((resolve) => {resolve(1)});
+            return Promise.resolve(1);
         }
     }
     
-    async userTask() {
+    async userInviteTask() {
         try {
-            console.log(`\n=================== 账号[${this.index}]开始助力 ===================`)
-            let taskall = []
-            for(let helpee of validJdList.filter(x => x.index != this.index && !x.maxHelp)) {
-                taskall.push(this.userHelpTask(helpee))
-                if(taskall.length >= NUM_CONCURRENCY) {
-                    await Promise.all(taskall)
-                    taskall = []
+            console.log(`\n----- 账号${this.index}[${this.name}]开始邀请 -----`)
+            let helpee = this
+            let needHelpList = inviterList.filter(x => x.index != this.index && x.successCount < x.needInviteNum)
+            if(needHelpList.length > 0) helpee = needHelpList[0]
+            await this.getActivityPage(helpee,true);
+            for(let rewards of this.stageReward) {
+                if(rewards.rewardStatus <= 2 && this.successCount >= rewards.inviteNum && rewards.rewardStock > 0) {
+                    await $.wait(5000)
+                    await this.getInviteReward(rewards)
                 }
-                if(!this.canHelp) break;
             }
-            if(taskall.length > 0) await Promise.all(taskall)
+            if(!this.needHelp) return;
+            if(globalExitFlag) return;
+            if(this.canHelp) await this.joinMember(helpee);
+            await this.firstInvite();
+            if(this.isBlack) return;
+            
+            if(this.needHelp) {
+                if(this.successCount < this.needInviteNum) {
+                    let canHelpList = validJdList.filter(x => x.index != this.index && x.canHelp)
+                    let concurrency = $.getMin(this.needInviteNum-this.successCount,NUM_MAX_CONCURRENCY)
+                    let taskall = []
+                    for(let helper of canHelpList) {
+                        taskall.push(helper.userHelpTask(this));
+                        if(taskall.length >= concurrency) {
+                            await Promise.all(taskall)
+                            taskall = []
+                            concurrency = $.getMin(this.needInviteNum-this.successCount,NUM_MAX_CONCURRENCY)
+                            let exitFlag = true
+                            for(let rewards of this.stageReward) {
+                                if(rewards.rewardStatus <= 2 && this.successCount >= rewards.inviteNum && rewards.rewardStock > 0) {
+                                    await $.wait(5000)
+                                    await this.getInviteReward(rewards)
+                                }
+                                if(rewards.rewardStock > 0 && rewards.rewardStatus <= 1) {
+                                    exitFlag = false
+                                }
+                            }
+                            if(mode == 2) {
+                                exitFlag = false
+                            }
+                            if(this.successCount >= this.needInviteNum) {
+                                exitFlag = true
+                            }
+                            if(exitFlag) break;
+                        }
+                    }
+                    await Promise.all(taskall)
+                }
+            }
         } catch(e) {
             console.log(e)
         } finally {
-            return new Promise((resolve) => {resolve(1)});
+            return Promise.resolve(1);
         }
     }
 }
@@ -243,141 +487,32 @@ class UserInfo {
     if (typeof $request !== "undefined") {
         await GetRewrite()
     }else {
+        
         if(!(await checkEnv())) return;
         
-        if(h5stMode == 0) {
-            await requestAlgo();
-        } else if(h5stMode == 1) {
-            await jstoken();
-        } else {
-            console.log(`不支持的h5stMode: ${h5stMode}`)
-        }
-        
         validJdList = userList.filter(x => x.isJdCK)
-        if(validJdList.length == 0) return;
-        
-        for(let user of validJdList) {
-            await user.userTask();
+        if(validJdList.length == 0) {
+            console.log('未找到有效的京东CK')
+            return;
         }
+        
+        $.logAndNotify(`\n活动链接: ${activityUrl}\n`);
+        
+        let inviterList = validJdList.filter(x => Object.keys(account_info).includes(x.pt_pin))
+        console.log(`共找到${inviterList.length}个车头pin`)
+        if(inviterList.length == 0) return;
+        
+        for(let user of inviterList) {
+            await user.userInviteTask();
+            if(globalExitFlag) return;
+        }
+        
+        await $.showmsg();
     }
 })()
 .catch((e) => console.log(e))
 .finally(() => $.done())
 
-async function jstoken() {
-    const { JSDOM } = jsdom;
-    let resourceLoader = new jsdom.ResourceLoader({
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:91.0) Gecko/20100101 Firefox/91.0',
-        referrer: "https://msitepp-fm.jd.com/rest/priceprophone/priceProPhoneMenu"
-    });
-    let virtualConsole = new jsdom.VirtualConsole();
-    let options = {
-        url: "https://msitepp-fm.jd.com/rest/priceprophone/priceProPhoneMenu",
-        referrer: "https://msitepp-fm.jd.com/rest/priceprophone/priceProPhoneMenu",
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:91.0) Gecko/20100101 Firefox/91.0',
-        runScripts: "dangerously",
-        resources: resourceLoader,
-        includeNodeLocations: true,
-        storageQuota: 10000000,
-        pretendToBeVisual: true,
-        virtualConsole
-    };
-    const dom = new JSDOM(`<body>
-    <script src="https:////static.360buyimg.com/siteppStatic/script/mescroll/map.js"></script>
-    <script src="https://storage.360buyimg.com/webcontainer/js_security_v3.js"></script>
-    <script src="https://static.360buyimg.com/siteppStatic/script/utils.js"></script>
-    <script src="https://js-nocaptcha.jd.com/statics/js/main.min.js"></script>
-    </body>`, options);
-    await $.wait(1500)
-    try {
-        jab = new dom.window.JAB({
-            bizId: 'jdjiabao',
-            initCaptcha: false
-        });
-        signWaap = dom.window.signWaap;
-    } catch (e) {}
-}
-async function requestAlgo() {
-    try {
-        fingerprint = '5751706390487846'
-        let bodyParam = {
-            "version": h5stVersion,
-            "fp": fingerprint,
-            "appId": zjdAppid,
-            "timestamp": Date.now(),
-            "platform": "web",
-            "expandParams": ""
-        }
-        let urlObject = {
-            url: 'https://cactus.jd.com/request_algo?g_ty=ajax',
-            headers: {
-                'Content-Type': 'application/json',
-                'Host': 'cactus.jd.com',
-                'Referer': 'https://cactus.jd.com',
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 11_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E217 MicroMessenger/6.8.0(0x16080000) NetType/WIFI Language/en Branch/Br_trunk MiniProgramEnv/Mac'
-            },
-            timeout: 5000,
-            body: JSON.stringify(bodyParam)
-        }
-        await httpRequest('post',urlObject)
-        let result = httpResult
-        if (result.status === 200) {
-            h5stToken = result.data.result.tk;
-            let enCryptMethodJDString = result.data.result.algo;
-            if (enCryptMethodJDString) {
-                enCryptMethodJD = new Function(`return ${enCryptMethodJDString}`)();
-            }
-        } else {
-            console.log(`fp: ${fingerprint}`)
-            console.log('request_algo 签名参数API请求失败')
-        }
-    } catch(e) {
-        console.log(e)
-    } finally {
-        return new Promise((resolve) => {resolve(1)});
-    }
-}
-
-function get_h5st(param) {
-    let nowtime = new Date()
-    let datetime = datefns.format(nowtime, 'yyyyMMddhhmmssSSS')
-    let timestamp = nowtime.getTime()
-    let hash1;
-    if (fingerprint && h5stToken && enCryptMethodJD) {
-        hash1 = enCryptMethodJD(h5stToken, fingerprint.toString(), datetime.toString(), zjdAppid.toString(), CryptoJS).toString(CryptoJS.enc.Hex);
-    } else {
-        let random = '5gkjB6SpmC9s';
-        h5stToken = `tk01wcdf61cb3a8nYUtHcmhSUFFCfddDPRvKvYaMjHkxo6Aj7dhzO+GXGFa9nPXfcgT+mULoF1b1YIS1ghvSlbwhE0Xc`;
-        fingerprint = 9686767825751161;
-        // $.fingerprint = 7811850938414161;
-        let str = `${h5stToken}${fingerprint}${datetime}${zjdAppid}${random}`;
-        hash1 = CryptoJS.SHA512(str, h5stToken).toString(CryptoJS.enc.Hex);
-    }
-    let st = []
-    for(let key in param) {
-        st.push(`${key}:${param[key]}`)
-    }
-    let hash2 = CryptoJS.HmacSHA256(st.join('&'), hash1.toString()).toString(CryptoJS.enc.Hex);
-    let h5stParams = [
-        datetime,
-        fingerprint,
-        zjdAppid,
-        h5stToken,
-        hash2,
-        h5stVersion,
-        timestamp,
-    ]
-    return h5stParams.join(';')
-}
-
-function generateFp() {
-    let e = "0123456789";
-    let a = 13;
-    let i = '';
-    for (; a--; )
-        i += e[Math.random() * e.length | 0];
-    return (i + Date.now()).slice(0, 16)
-}
 ///////////////////////////////////////////////////////////////////
 async function checkEnv() {
     if(userCookie) {
@@ -402,22 +537,26 @@ async function checkEnv() {
 }
 
 ////////////////////////////////////////////////////////////////////
-function populateUrlObject(url,cookie,UA,body=''){
+function populateUrlObject(url,cookie,UA,body){
     let host = url.replace('//','/').split('/')[1]
     let urlObject = {
         url: url,
         headers: {
             'Host': host,
             'Cookie': cookie,
-            'Referer': Referer,
             'User-Agent': UA,
+            'Connection': 'keep-alive',
+            'Cookie': cookie,
+            'Referer': Referer,
+            'Origin': Origin,
+            'request-from': 'native',
         },
         timeout: 5000,
     }
     if(body) {
         urlObject.body = body
-        urlObject.headers['Content-Type'] =  'application/x-www-form-urlencoded'
-        urlObject.headers['Content-Length'] = urlObject.body ? urlObject.body.length : 0
+        urlObject.headers['Content-Type'] =  'application/json'
+        //urlObject.headers['Content-Length'] = urlObject.body ? urlObject.body.length : 0
     }
     return urlObject;
 }
@@ -625,17 +764,18 @@ function Env(name,env) {
                 })
             }
         }
-        time(t) {
+        time(t,x=null) {
+            let xt = x ? new Date(x) : new Date
             let e = {
-                "M+": (new Date).getMonth() + 1,
-                "d+": (new Date).getDate(),
-                "h+": (new Date).getHours(),
-                "m+": (new Date).getMinutes(),
-                "s+": (new Date).getSeconds(),
-                "q+": Math.floor(((new Date).getMonth() + 3) / 3),
-                S: (new Date).getMilliseconds()
+                "M+": xt.getMonth() + 1,
+                "d+": xt.getDate(),
+                "h+": xt.getHours(),
+                "m+": xt.getMinutes(),
+                "s+": xt.getSeconds(),
+                "q+": Math.floor((xt.getMonth() + 3) / 3),
+                S: xt.getMilliseconds()
             };
-            /(y+)/.test(t) && (t = t.replace(RegExp.$1, ((new Date).getFullYear() + "").substr(4 - RegExp.$1.length)));
+            /(y+)/.test(t) && (t = t.replace(RegExp.$1, (xt.getFullYear() + "").substr(4 - RegExp.$1.length)));
             for (let s in e)
                 new RegExp("(" + s + ")").test(t) && (t = t.replace(RegExp.$1, 1 == RegExp.$1.length ? e[s] : ("00" + e[s]).substr(("" + e[s]).length)));
             return t
