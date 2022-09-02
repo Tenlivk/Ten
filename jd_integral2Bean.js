@@ -2,7 +2,7 @@
 物流积分兑换京豆
 @Leaf
 
-cron: 0 0 * * *
+cron: 0 0,2 0* * *
 */
 const got = require("got");
 const $ = new Env("物流积分兑换京豆");
