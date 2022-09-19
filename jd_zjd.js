@@ -1,7 +1,7 @@
 /*
 活动入口：微信小程序-赚京豆-瓜分京豆
 
-36 14-16 * * * https://raw.githubusercontent.com/6dylan6/jdpro/main/jd_zjd.js
+0 0 * * * https://raw.githubusercontent.com/6dylan6/jdpro/main/jd_zjd.js
 
 默认不运行，变量export DY_ZJD='true'运行
 
