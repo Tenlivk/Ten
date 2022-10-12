@@ -1,6 +1,8 @@
 /*
 定时自定义，一天三次
 
+0 0 * * * jd_zjd.js, tag=赚京豆-加密,
+
 https://raw.githubusercontent.com/6dylan6/jdpro/main/jd_zjd_new.js
 
 默认前3个CK开团，如需修改，变量export DY_ZJDTOP=数量
