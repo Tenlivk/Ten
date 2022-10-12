@@ -10,10 +10,10 @@ export HELP_JOYPARK=""
 
 ================Loon==============
 [Script]
-cron "0 1,7,20 * * *" script-path=jd_joypark_task.js,tag=汪汪乐园每日任务
+cron "0 1,20 * * *" script-path=jd_joypark_task.js,tag=汪汪乐园每日任务
 
 ===============Surge=================
-汪汪乐园每日任务 = type=cron,cronexp="0 1,7,20 * * *",wake-system=1,timeout=3600,script-path=jd_joypark_task.js
+汪汪乐园每日任务 = type=cron,cronexp="0 1,20 * * *",wake-system=1,timeout=3600,script-path=jd_joypark_task.js
 
 ============小火箭=========
 汪汪乐园每日任务 = type=cron,script-path=jd_joypark_task.js, cronexpr="0 1,7,20 * * *", timeout=3600, enable=true
