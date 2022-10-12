@@ -10,7 +10,7 @@
 ==========================Quantumultx=========================
 [task_local]
 #jd免费水果
-5 6-18/6 * * * jd_fruit_task.js, tag=东东农场日常任务, img-url=https://raw.githubusercontent.com/58xinian/icon/master/jdnc.png, enabled=true
+1 1 1 1 * jd_fruit_task.js, tag=东东农场日常任务, img-url=https://raw.githubusercontent.com/58xinian/icon/master/jdnc.png, enabled=true
 =========================Loon=============================
 [Script]
 cron "5 6-18/6 * * *" script-path=jd_fruit_task.js,tag=东东农场日常任务
@@ -24,7 +24,7 @@ cron "5 6-18/6 * * *" script-path=jd_fruit_task.js,tag=东东农场日常任务
 export DO_TEN_WATER_AGAIN="" 默认再次浇水
 
 */
-const $ = new Env('东东农场日常任务');
+const $ = new Env('东东农场日常任务-老版本');
 let cookiesArr = [],
     cookie = '',
     jdFruitShareArr = [],
