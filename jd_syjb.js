@@ -12,8 +12,8 @@ pin1换成对应的pin值 用,分开
 只助力2个 满了脚本自动从ck1开始替换未满的
 export gua_nhjRed_rebatePin="pin1,pin2"
 */
-process.env.gua_nhjRed_rebateCode='kMe8vSX'
-process.env.gua_nhjRed_rebatePin='jd_7d97028033118'
+process.env.gua_nhjRed_rebateCode='kMhrKa1'
+process.env.gua_nhjRed_rebatePin='jd_625e49270164b'
 let rebateCodes = ''
 let rebatePin = ''
 const $ = new Env('年货节红包');
